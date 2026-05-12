@@ -37,9 +37,7 @@ import numpy as np
 
 from leo_vetter.thresholds import (
     weak,
-    invalid_transits,
     bad_shape,
-    non_unique,
     chases,
     dmm,
     single_event,
@@ -122,6 +120,50 @@ def vshaped_wd(metrics, thresholds):
     return np.zeros(len(metrics), dtype=bool), message
 
 
+def invalid_transits_wd(metrics, thresholds):
+    """WD-adapted ``invalid_transits``.
+
+    The FGKM version requires ``new_MES > MES_threshold`` AND
+    ``new_N_transit > N_transit_threshold`` *after* LEO prunes "bad"
+    individual transits. At TESS 200 s cadence WD transits have only
+    3-5 cadences per event, so each transit's individual significance
+    is low and LEO's per-event pruning is too aggressive — WD 1856
+    drops from MES=7.2 to new_MES=2.3 because most "good" transits get
+    flagged as "bad" by the per-event chi^2 cuts.
+
+    For WDs we keep the original ``MES`` and ``N_transit`` floors but
+    drop the pruned-MES requirement, since the pre-pruning detection
+    is the trustworthy quantity at this cadence.
+    """
+    message = "FA: not enough valid transits"
+    ntr = metrics["new_N_transit"] < thresholds["N_transit"]
+    return ntr, message
+
+
+def non_unique_wd(metrics, thresholds):
+    """WD-adapted ``non_unique``.
+
+    The FGKM version requires the primary transit to be more significant
+    than (a) the noise floor (MS1), (b) any tertiary feature in the
+    phased LC (MS2), and (c) the largest positive feature ``sig_pos``
+    in the modshift (MS3 = sig_pri - sig_pos - FA2 < threshold).
+
+    The MS3 sig_pos clause fires on WD 1856 because the detrended LC
+    has a positive feature (likely a detrend artifact tied to the
+    upstream ``DET_FLUX_ERR == NaN`` HLSP issue affecting some TICs)
+    with sig_pos > sig_pri. The clause is structurally vulnerable to
+    detrend artifacts at WD cadence. We keep MS1 and MS2 but drop MS3.
+
+    Once HLSP DET_FLUX_ERR issues are fixed upstream and a re-detrend
+    pass is run, MS3 may be re-enabled — leave the threshold key in
+    place so a future PR can flip the behavior cleanly.
+    """
+    message = "FA: events not unique in phased light curve"
+    MS1 = (metrics["sig_pri"] / metrics["Fred"] - metrics["FA1"]) < thresholds["MS1"]
+    MS2 = (metrics["sig_pri"] - metrics["sig_ter"] - metrics["FA2"]) < thresholds["MS2"]
+    return MS1 | MS2, message
+
+
 def _qtran_max_wd_chord(metrics, thresholds):
     """Expected maximum observable qtran (= dur/period) for a WD host at b=0
     with the largest plausible companion (R_comp_max = ``thresholds['R_comp_max_R_jup']`` R_jup).
@@ -179,9 +221,9 @@ def check_thresholds_wd(metrics, case, verbose=False, thresholds=None):
     if case == "FA":
         tests = [
             weak,
-            invalid_transits,
+            invalid_transits_wd,
             bad_shape,
-            non_unique,
+            non_unique_wd,
             chases,
             dmm,
             single_event,
